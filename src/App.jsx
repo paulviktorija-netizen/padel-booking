@@ -74,12 +74,21 @@ export default function App() {
   const [bookings, setBookings] = useState({});
   const [weekOffset, setWeekOffset] = useState(0);
   const [connected, setConnected] = useState(false);
+
+  // Book modal
   const [modal, setModal] = useState(null);
   const [players, setPlayers] = useState(emptyPlayers());
   const [phase, setPhase] = useState("");
   const [unit, setUnit] = useState("");
+  const [pin, setPin] = useState("");
+  const [pinConfirm, setPinConfirm] = useState("");
   const [errors, setErrors] = useState({});
+
+  // Cancel modal
   const [cancelTarget, setCancelTarget] = useState(null);
+  const [cancelPin, setCancelPin] = useState("");
+  const [cancelError, setCancelError] = useState("");
+
   const [toast, setToast] = useState(null);
 
   useEffect(() => {
@@ -129,7 +138,7 @@ export default function App() {
       showToast(`Booking opens ${e.toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"})} at ${fmt2(e.getHours())}:${fmt2(e.getMinutes())}.`, "error");
       return;
     }
-    setPlayers(emptyPlayers()); setPhase(""); setUnit(""); setErrors({});
+    setPlayers(emptyPlayers()); setPhase(""); setUnit(""); setPin(""); setPinConfirm(""); setErrors({});
     setModal({slot, date:selectedDate});
   }
 
@@ -143,6 +152,8 @@ export default function App() {
     if (!allFilled) errs.playersMsg="All 4 players (first & last name) are required.";
     if (!phase) errs.phase=true;
     if (!unit.trim()) errs.unit=true;
+    if (!/^\d{4}$/.test(pin)) errs.pin="PIN must be exactly 4 digits.";
+    else if (pin !== pinConfirm) errs.pinConfirm="PINs do not match.";
     return errs;
   }
 
@@ -154,14 +165,24 @@ export default function App() {
       players: players.map(p => `${p.first.trim()} ${p.last.trim()}`),
       phase, unit: unit.trim().toUpperCase(),
       slotLabel: modal.slot.label,
+      pin, // stored as plain text (sufficient for this use case)
       bookedAt: new Date().toISOString(),
     });
     setModal(null);
     showToast("Booking confirmed! 🎾");
   }
 
-  async function cancelBooking() {
+  function openCancelModal(date, slotId) {
+    setCancelTarget({date, slotId});
+    setCancelPin("");
+    setCancelError("");
+  }
+
+  async function attemptCancel() {
     const {date, slotId} = cancelTarget;
+    const booking = getBooking(date, slotId);
+    if (!cancelPin) { setCancelError("Please enter your PIN."); return; }
+    if (cancelPin !== booking.pin) { setCancelError("Wrong PIN. Try again."); setCancelPin(""); return; }
     await remove(ref(db, `bookings/${dateKey(date)}/${slotId}`));
     setCancelTarget(null);
     showToast("Booking cancelled.", "error");
@@ -297,7 +318,7 @@ export default function App() {
                       }}>Book</button>
                     )}
                     {status==="booked" && (
-                      <button onClick={() => setCancelTarget({date:selectedDate, slotId:slot.id})} style={{
+                      <button onClick={() => openCancelModal(selectedDate, slot.id)} style={{
                         background:"rgba(239,68,68,0.09)", border:"1px solid rgba(239,68,68,0.28)",
                         color:"#f87171", fontWeight:700, fontSize:12,
                         padding:"8px 13px", borderRadius:10, cursor:"pointer",
@@ -313,7 +334,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* Booking modal */}
+      {/* ── Booking modal ── */}
       {modal && (
         <div style={{
           position:"fixed", inset:0, background:"rgba(0,0,0,0.82)",
@@ -333,6 +354,8 @@ export default function App() {
             <p style={{margin:"0 0 22px", color:"#4ade80", fontSize:13, fontWeight:600}}>
               🎾 {modal.slot.label} · {modal.date.toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"})}
             </p>
+
+            {/* Phase + Unit */}
             <div style={{display:"flex", gap:10, marginBottom:18}}>
               <div style={{flex:1}}>
                 <label style={labelStyle}>Phase</label>
@@ -354,9 +377,11 @@ export default function App() {
                 {errors.unit && <p style={errTxt}>Required</p>}
               </div>
             </div>
+
+            {/* Players */}
             <label style={{...labelStyle, display:"block", marginBottom:8}}>Players — all 4 required</label>
             {errors.playersMsg && <p style={{...errTxt, marginBottom:10}}>{errors.playersMsg}</p>}
-            <div style={{display:"flex", flexDirection:"column", gap:9, marginBottom:24}}>
+            <div style={{display:"flex", flexDirection:"column", gap:9, marginBottom:20}}>
               {[0,1,2,3].map(i=>(
                 <div key={i} style={{display:"flex", gap:8, alignItems:"center"}}>
                   <span style={{fontSize:11, color:"#4ade80", fontWeight:700, minWidth:18, textAlign:"right"}}>{i+1}</span>
@@ -375,6 +400,39 @@ export default function App() {
                 </div>
               ))}
             </div>
+
+            {/* PIN */}
+            <div style={{
+              background:"rgba(74,222,128,0.05)", border:"1px solid rgba(74,222,128,0.15)",
+              borderRadius:12, padding:"14px 16px", marginBottom:22,
+            }}>
+              <p style={{margin:"0 0 12px", fontSize:12, color:"#86efac", fontWeight:600}}>
+                🔐 Choose a 4-digit PIN to protect your booking
+              </p>
+              <div style={{display:"flex", gap:10}}>
+                <div style={{flex:1}}>
+                  <label style={labelStyle}>PIN</label>
+                  <input value={pin} placeholder="e.g. 1234" maxLength={4} inputMode="numeric"
+                    onChange={e=>{setPin(e.target.value.replace(/\D/g,"").slice(0,4));setErrors(er=>({...er,pin:null}));}}
+                    style={{...inputBase, letterSpacing:"0.3em", borderColor:errors.pin?"#ef4444":"rgba(255,255,255,0.1)"}}
+                    onFocus={e=>e.target.style.borderColor="#4ade80"}
+                    onBlur={e=>e.target.style.borderColor=errors.pin?"#ef4444":"rgba(255,255,255,0.1)"}
+                  />
+                  {errors.pin && <p style={errTxt}>{errors.pin}</p>}
+                </div>
+                <div style={{flex:1}}>
+                  <label style={labelStyle}>Confirm PIN</label>
+                  <input value={pinConfirm} placeholder="repeat PIN" maxLength={4} inputMode="numeric"
+                    onChange={e=>{setPinConfirm(e.target.value.replace(/\D/g,"").slice(0,4));setErrors(er=>({...er,pinConfirm:null}));}}
+                    style={{...inputBase, letterSpacing:"0.3em", borderColor:errors.pinConfirm?"#ef4444":"rgba(255,255,255,0.1)"}}
+                    onFocus={e=>e.target.style.borderColor="#4ade80"}
+                    onBlur={e=>e.target.style.borderColor=errors.pinConfirm?"#ef4444":"rgba(255,255,255,0.1)"}
+                  />
+                  {errors.pinConfirm && <p style={errTxt}>{errors.pinConfirm}</p>}
+                </div>
+              </div>
+            </div>
+
             <div style={{display:"flex", gap:10}}>
               <button onClick={()=>setModal(null)} style={{
                 flex:1, padding:"14px", borderRadius:13,
@@ -394,7 +452,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Cancel confirm */}
+      {/* ── Cancel PIN modal ── */}
       {cancelTarget && (
         <div style={{
           position:"fixed", inset:0, background:"rgba(0,0,0,0.82)",
@@ -402,25 +460,50 @@ export default function App() {
           zIndex:100, backdropFilter:"blur(8px)", padding:20,
         }}>
           <div style={{
-            background:"linear-gradient(180deg, #1c0909, #060d18)",
-            border:"1px solid rgba(239,68,68,0.3)",
-            borderRadius:18, padding:28, maxWidth:320, width:"100%",
+            background:"linear-gradient(180deg, #0c1e32, #060d18)",
+            border:"1px solid rgba(239,68,68,0.25)",
+            borderRadius:20, padding:28, maxWidth:320, width:"100%",
+            boxShadow:"0 20px 60px rgba(0,0,0,0.6)",
           }}>
-            <div style={{fontSize:32, textAlign:"center", marginBottom:10}}>⚠️</div>
-            <h3 style={{margin:"0 0 6px", fontWeight:800, textAlign:"center", color:"#fff", fontSize:17}}>Cancel this booking?</h3>
-            <p style={{margin:"0 0 22px", color:"#64748b", fontSize:13, textAlign:"center"}}>This action cannot be undone.</p>
-            <div style={{display:"flex", gap:10}}>
+            <div style={{fontSize:32, textAlign:"center", marginBottom:10}}>🔐</div>
+            <h3 style={{margin:"0 0 6px", fontWeight:800, textAlign:"center", color:"#fff", fontSize:17}}>
+              Enter your PIN
+            </h3>
+            <p style={{margin:"0 0 20px", color:"#64748b", fontSize:13, textAlign:"center"}}>
+              Only the person who booked can cancel.
+            </p>
+            <input
+              value={cancelPin}
+              placeholder="4-digit PIN"
+              maxLength={4}
+              inputMode="numeric"
+              autoFocus
+              onChange={e=>{setCancelPin(e.target.value.replace(/\D/g,"").slice(0,4));setCancelError("");}}
+              onKeyDown={e=>e.key==="Enter" && attemptCancel()}
+              style={{
+                ...inputBase,
+                textAlign:"center", fontSize:22, letterSpacing:"0.4em",
+                marginBottom:8,
+                borderColor:cancelError?"#ef4444":"rgba(255,255,255,0.1)",
+              }}
+              onFocus={e=>e.target.style.borderColor="#4ade80"}
+              onBlur={e=>e.target.style.borderColor=cancelError?"#ef4444":"rgba(255,255,255,0.1)"}
+            />
+            {cancelError && (
+              <p style={{...errTxt, textAlign:"center", marginBottom:12, fontSize:12}}>❌ {cancelError}</p>
+            )}
+            <div style={{display:"flex", gap:10, marginTop:16}}>
               <button onClick={()=>setCancelTarget(null)} style={{
                 flex:1, padding:"12px", borderRadius:11,
                 border:"1.5px solid rgba(255,255,255,0.1)",
                 background:"transparent", color:"#64748b",
                 fontWeight:700, cursor:"pointer", fontFamily:"inherit",
-              }}>Keep it</button>
-              <button onClick={cancelBooking} style={{
+              }}>Back</button>
+              <button onClick={attemptCancel} style={{
                 flex:1, padding:"12px", borderRadius:11,
                 background:"linear-gradient(135deg, #ef4444, #b91c1c)",
                 border:"none", color:"#fff", fontWeight:800, cursor:"pointer", fontFamily:"inherit",
-              }}>Yes, cancel</button>
+              }}>Cancel booking</button>
             </div>
           </div>
         </div>
