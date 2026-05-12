@@ -50,6 +50,11 @@ function canBook(slotStartMin, slotDate, now) {
 
 const emptyPlayers = () => [{first:"",last:""},{first:"",last:""},{first:"",last:""},{first:"",last:""}];
 
+const splitName = (fullName) => {
+  const parts = fullName.trim().split(" ");
+  return { first: parts[0] || "", last: parts.slice(1).join(" ") || "" };
+};
+
 const navBtn = {
   background:"rgba(255,255,255,0.06)", border:"1.5px solid rgba(255,255,255,0.1)",
   color:"#e2e8f0", borderRadius:9, width:36, height:36, cursor:"pointer",
@@ -84,10 +89,15 @@ export default function App() {
   const [pinConfirm, setPinConfirm] = useState("");
   const [errors, setErrors] = useState({});
 
-  // Cancel modal
-  const [cancelTarget, setCancelTarget] = useState(null);
-  const [cancelPin, setCancelPin] = useState("");
-  const [cancelError, setCancelError] = useState("");
+  // PIN verification modal (shared for cancel + edit)
+  const [pinModal, setPinModal] = useState(null); // { type: "cancel"|"edit", date, slotId }
+  const [pinInput, setPinInput] = useState("");
+  const [pinError, setPinError] = useState("");
+
+  // Edit modal
+  const [editModal, setEditModal] = useState(null); // { date, slotId, booking }
+  const [editPlayers, setEditPlayers] = useState(emptyPlayers());
+  const [editErrors, setEditErrors] = useState({});
 
   const [toast, setToast] = useState(null);
 
@@ -165,27 +175,66 @@ export default function App() {
       players: players.map(p => `${p.first.trim()} ${p.last.trim()}`),
       phase, unit: unit.trim().toUpperCase(),
       slotLabel: modal.slot.label,
-      pin, // stored as plain text (sufficient for this use case)
+      pin,
       bookedAt: new Date().toISOString(),
     });
     setModal(null);
     showToast("Booking confirmed! 🎾");
   }
 
-  function openCancelModal(date, slotId) {
-    setCancelTarget({date, slotId});
-    setCancelPin("");
-    setCancelError("");
+  // Open PIN verification (for both cancel and edit)
+  function openPinModal(type, date, slotId) {
+    setPinModal({type, date, slotId});
+    setPinInput("");
+    setPinError("");
   }
 
-  async function attemptCancel() {
-    const {date, slotId} = cancelTarget;
-    const booking = getBooking(date, slotId);
-    if (!cancelPin) { setCancelError("Please enter your PIN."); return; }
-    if (cancelPin !== booking.pin) { setCancelError("Wrong PIN. Try again."); setCancelPin(""); return; }
+  function verifyPin() {
+    const booking = getBooking(pinModal.date, pinModal.slotId);
+    if (!pinInput) { setPinError("Please enter your PIN."); return; }
+    if (pinInput !== booking.pin) { setPinError("Wrong PIN. Try again."); setPinInput(""); return; }
+
+    if (pinModal.type === "cancel") {
+      doCancel(pinModal.date, pinModal.slotId);
+    } else if (pinModal.type === "edit") {
+      openEditModal(pinModal.date, pinModal.slotId, booking);
+    }
+    setPinModal(null);
+  }
+
+  async function doCancel(date, slotId) {
     await remove(ref(db, `bookings/${dateKey(date)}/${slotId}`));
-    setCancelTarget(null);
     showToast("Booking cancelled.", "error");
+  }
+
+  function openEditModal(date, slotId, booking) {
+    setEditPlayers(booking.players.map(p => splitName(p)));
+    setEditErrors({});
+    setEditModal({date, slotId, booking});
+  }
+
+  function validateEdit() {
+    const errs = {};
+    let allFilled = true;
+    editPlayers.forEach((p,i) => {
+      if (!p.first.trim()) { errs[`p${i}f`]=true; allFilled=false; }
+      if (!p.last.trim()) { errs[`p${i}l`]=true; allFilled=false; }
+    });
+    if (!allFilled) errs.playersMsg="All 4 players (first & last name) are required.";
+    return errs;
+  }
+
+  async function confirmEdit() {
+    const errs = validateEdit();
+    if (Object.keys(errs).length>0) { setEditErrors(errs); return; }
+    const {date, slotId, booking} = editModal;
+    const key = dateKey(date);
+    await set(ref(db, `bookings/${key}/${slotId}`), {
+      ...booking,
+      players: editPlayers.map(p => `${p.first.trim()} ${p.last.trim()}`),
+    });
+    setEditModal(null);
+    showToast("Booking updated! ✏️");
   }
 
   return (
@@ -308,7 +357,8 @@ export default function App() {
                       </div>
                     )}
                   </div>
-                  <div style={{flexShrink:0, paddingTop:2}}>
+                  {/* Action buttons */}
+                  <div style={{flexShrink:0, paddingTop:2, display:"flex", flexDirection:"column", gap:6, alignItems:"flex-end"}}>
                     {status==="free" && (
                       <button onClick={() => openBookModal(slot)} style={{
                         background:"linear-gradient(135deg, #4ade80, #16a34a)",
@@ -317,13 +367,18 @@ export default function App() {
                         boxShadow:"0 3px 14px rgba(74,222,128,0.3)",
                       }}>Book</button>
                     )}
-                    {status==="booked" && (
-                      <button onClick={() => openCancelModal(selectedDate, slot.id)} style={{
+                    {status==="booked" && (<>
+                      <button onClick={() => openPinModal("edit", selectedDate, slot.id)} style={{
+                        background:"rgba(99,102,241,0.12)", border:"1px solid rgba(99,102,241,0.3)",
+                        color:"#a5b4fc", fontWeight:700, fontSize:12,
+                        padding:"7px 13px", borderRadius:10, cursor:"pointer", whiteSpace:"nowrap",
+                      }}>✏️ Edit</button>
+                      <button onClick={() => openPinModal("cancel", selectedDate, slot.id)} style={{
                         background:"rgba(239,68,68,0.09)", border:"1px solid rgba(239,68,68,0.28)",
                         color:"#f87171", fontWeight:700, fontSize:12,
-                        padding:"8px 13px", borderRadius:10, cursor:"pointer",
+                        padding:"7px 13px", borderRadius:10, cursor:"pointer",
                       }}>Cancel</button>
-                    )}
+                    </>)}
                     {status==="locked" && <span style={{fontSize:20}}>🔒</span>}
                     {status==="past" && <span style={{fontSize:10.5, color:"#1e293b"}}>Past</span>}
                   </div>
@@ -334,7 +389,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* ── Booking modal ── */}
+      {/* ── Book modal ── */}
       {modal && (
         <div style={{
           position:"fixed", inset:0, background:"rgba(0,0,0,0.82)",
@@ -354,8 +409,6 @@ export default function App() {
             <p style={{margin:"0 0 22px", color:"#4ade80", fontSize:13, fontWeight:600}}>
               🎾 {modal.slot.label} · {modal.date.toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"})}
             </p>
-
-            {/* Phase + Unit */}
             <div style={{display:"flex", gap:10, marginBottom:18}}>
               <div style={{flex:1}}>
                 <label style={labelStyle}>Phase</label>
@@ -377,8 +430,6 @@ export default function App() {
                 {errors.unit && <p style={errTxt}>Required</p>}
               </div>
             </div>
-
-            {/* Players */}
             <label style={{...labelStyle, display:"block", marginBottom:8}}>Players — all 4 required</label>
             {errors.playersMsg && <p style={{...errTxt, marginBottom:10}}>{errors.playersMsg}</p>}
             <div style={{display:"flex", flexDirection:"column", gap:9, marginBottom:20}}>
@@ -400,8 +451,6 @@ export default function App() {
                 </div>
               ))}
             </div>
-
-            {/* PIN */}
             <div style={{
               background:"rgba(74,222,128,0.05)", border:"1px solid rgba(74,222,128,0.15)",
               borderRadius:12, padding:"14px 16px", marginBottom:22,
@@ -432,7 +481,6 @@ export default function App() {
                 </div>
               </div>
             </div>
-
             <div style={{display:"flex", gap:10}}>
               <button onClick={()=>setModal(null)} style={{
                 flex:1, padding:"14px", borderRadius:13,
@@ -452,8 +500,8 @@ export default function App() {
         </div>
       )}
 
-      {/* ── Cancel PIN modal ── */}
-      {cancelTarget && (
+      {/* ── PIN verification modal ── */}
+      {pinModal && (
         <div style={{
           position:"fixed", inset:0, background:"rgba(0,0,0,0.82)",
           display:"flex", alignItems:"center", justifyContent:"center",
@@ -461,49 +509,115 @@ export default function App() {
         }}>
           <div style={{
             background:"linear-gradient(180deg, #0c1e32, #060d18)",
-            border:"1px solid rgba(239,68,68,0.25)",
+            border:`1px solid ${pinModal.type==="cancel" ? "rgba(239,68,68,0.25)" : "rgba(99,102,241,0.25)"}`,
             borderRadius:20, padding:28, maxWidth:320, width:"100%",
             boxShadow:"0 20px 60px rgba(0,0,0,0.6)",
           }}>
             <div style={{fontSize:32, textAlign:"center", marginBottom:10}}>🔐</div>
             <h3 style={{margin:"0 0 6px", fontWeight:800, textAlign:"center", color:"#fff", fontSize:17}}>
-              Enter your PIN
+              {pinModal.type==="cancel" ? "Cancel booking" : "Edit booking"}
             </h3>
             <p style={{margin:"0 0 20px", color:"#64748b", fontSize:13, textAlign:"center"}}>
-              Only the person who booked can cancel.
+              Enter your PIN to continue
             </p>
             <input
-              value={cancelPin}
+              value={pinInput}
               placeholder="4-digit PIN"
               maxLength={4}
               inputMode="numeric"
               autoFocus
-              onChange={e=>{setCancelPin(e.target.value.replace(/\D/g,"").slice(0,4));setCancelError("");}}
-              onKeyDown={e=>e.key==="Enter" && attemptCancel()}
+              onChange={e=>{setPinInput(e.target.value.replace(/\D/g,"").slice(0,4));setPinError("");}}
+              onKeyDown={e=>e.key==="Enter" && verifyPin()}
               style={{
                 ...inputBase,
                 textAlign:"center", fontSize:22, letterSpacing:"0.4em",
                 marginBottom:8,
-                borderColor:cancelError?"#ef4444":"rgba(255,255,255,0.1)",
+                borderColor:pinError?"#ef4444":"rgba(255,255,255,0.1)",
               }}
               onFocus={e=>e.target.style.borderColor="#4ade80"}
-              onBlur={e=>e.target.style.borderColor=cancelError?"#ef4444":"rgba(255,255,255,0.1)"}
+              onBlur={e=>e.target.style.borderColor=pinError?"#ef4444":"rgba(255,255,255,0.1)"}
             />
-            {cancelError && (
-              <p style={{...errTxt, textAlign:"center", marginBottom:12, fontSize:12}}>❌ {cancelError}</p>
-            )}
+            {pinError && <p style={{...errTxt, textAlign:"center", marginBottom:12, fontSize:12}}>❌ {pinError}</p>}
             <div style={{display:"flex", gap:10, marginTop:16}}>
-              <button onClick={()=>setCancelTarget(null)} style={{
+              <button onClick={()=>setPinModal(null)} style={{
                 flex:1, padding:"12px", borderRadius:11,
                 border:"1.5px solid rgba(255,255,255,0.1)",
                 background:"transparent", color:"#64748b",
                 fontWeight:700, cursor:"pointer", fontFamily:"inherit",
               }}>Back</button>
-              <button onClick={attemptCancel} style={{
+              <button onClick={verifyPin} style={{
                 flex:1, padding:"12px", borderRadius:11,
-                background:"linear-gradient(135deg, #ef4444, #b91c1c)",
+                background: pinModal.type==="cancel"
+                  ? "linear-gradient(135deg, #ef4444, #b91c1c)"
+                  : "linear-gradient(135deg, #6366f1, #4338ca)",
                 border:"none", color:"#fff", fontWeight:800, cursor:"pointer", fontFamily:"inherit",
-              }}>Cancel booking</button>
+              }}>
+                {pinModal.type==="cancel" ? "Cancel booking" : "Continue"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Edit modal ── */}
+      {editModal && (
+        <div style={{
+          position:"fixed", inset:0, background:"rgba(0,0,0,0.82)",
+          display:"flex", alignItems:"flex-end", justifyContent:"center",
+          zIndex:100, backdropFilter:"blur(8px)",
+        }} onClick={e => e.target===e.currentTarget && setEditModal(null)}>
+          <div style={{
+            background:"linear-gradient(180deg, #0c1e32, #060d18)",
+            border:"1px solid rgba(99,102,241,0.2)",
+            borderRadius:"22px 22px 0 0",
+            padding:"22px 20px 50px", width:"100%", maxWidth:600,
+            boxShadow:"0 -20px 60px rgba(0,0,0,0.7)",
+            maxHeight:"94vh", overflowY:"auto",
+          }}>
+            <div style={{width:36,height:4,borderRadius:2,background:"rgba(255,255,255,0.15)",margin:"0 auto 22px"}}/>
+            <h2 style={{margin:"0 0 3px", fontWeight:800, fontSize:19, color:"#fff"}}>✏️ Edit Booking</h2>
+            <p style={{margin:"0 0 6px", color:"#a5b4fc", fontSize:13, fontWeight:600}}>
+              {editModal.booking.slotLabel} · {editModal.date.toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"})}
+            </p>
+            <p style={{margin:"0 0 22px", color:"#475569", fontSize:12}}>
+              {editModal.booking.phase} · Unit {editModal.booking.unit}
+            </p>
+
+            <label style={{...labelStyle, display:"block", marginBottom:8}}>Update players</label>
+            {editErrors.playersMsg && <p style={{...errTxt, marginBottom:10}}>{editErrors.playersMsg}</p>}
+            <div style={{display:"flex", flexDirection:"column", gap:9, marginBottom:24}}>
+              {[0,1,2,3].map(i=>(
+                <div key={i} style={{display:"flex", gap:8, alignItems:"center"}}>
+                  <span style={{fontSize:11, color:"#a5b4fc", fontWeight:700, minWidth:18, textAlign:"right"}}>{i+1}</span>
+                  <input placeholder="First name" value={editPlayers[i].first}
+                    onChange={e=>{const u=[...editPlayers];u[i]={...u[i],first:e.target.value};setEditPlayers(u);setEditErrors(er=>({...er,[`p${i}f`]:false,playersMsg:null}));}}
+                    style={{...inputBase, flex:1, borderColor:editErrors[`p${i}f`]?"#ef4444":"rgba(255,255,255,0.1)"}}
+                    onFocus={e=>e.target.style.borderColor="#a5b4fc"}
+                    onBlur={e=>e.target.style.borderColor=editErrors[`p${i}f`]?"#ef4444":"rgba(255,255,255,0.1)"}
+                  />
+                  <input placeholder="Last name" value={editPlayers[i].last}
+                    onChange={e=>{const u=[...editPlayers];u[i]={...u[i],last:e.target.value};setEditPlayers(u);setEditErrors(er=>({...er,[`p${i}l`]:false,playersMsg:null}));}}
+                    style={{...inputBase, flex:1, borderColor:editErrors[`p${i}l`]?"#ef4444":"rgba(255,255,255,0.1)"}}
+                    onFocus={e=>e.target.style.borderColor="#a5b4fc"}
+                    onBlur={e=>e.target.style.borderColor=editErrors[`p${i}l`]?"#ef4444":"rgba(255,255,255,0.1)"}
+                  />
+                </div>
+              ))}
+            </div>
+            <div style={{display:"flex", gap:10}}>
+              <button onClick={()=>setEditModal(null)} style={{
+                flex:1, padding:"14px", borderRadius:13,
+                border:"1.5px solid rgba(255,255,255,0.1)",
+                background:"transparent", color:"#64748b",
+                fontWeight:700, fontSize:14, cursor:"pointer", fontFamily:"inherit",
+              }}>Cancel</button>
+              <button onClick={confirmEdit} style={{
+                flex:2, padding:"14px", borderRadius:13,
+                background:"linear-gradient(135deg, #6366f1, #4338ca)",
+                border:"none", color:"#fff",
+                fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:"inherit",
+                boxShadow:"0 4px 18px rgba(99,102,241,0.35)",
+              }}>Save changes</button>
             </div>
           </div>
         </div>
